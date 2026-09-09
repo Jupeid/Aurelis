@@ -35,6 +35,11 @@ An interactive book made with python
 - PyInstaller — Empacotamento para executável Desktop.
 
 ---
+## 📋 Sinopse
+
+​Em um continente dividindo-se entre a diplomacia e a guerra, um jovem de vilarejo se torna o centro de um jogo divino imprevisível. Portador de uma habilidade única que desafia as leis da magia tradicional, Kael precisa navegar entre os segredos do lendário continente Aurelis,enfrentar ameaças demoníacas e a presença de escolhidos divinos que lutam pela supremacia. Suas decisões ditam o rumo da história: você trilhará o caminho do herói, manterá a neutralidade para proteger quem ama, ou sucumbirá aos caminhos mais sombrios para alcançar o poder?
+
+---
 
 ## ✍️ Autor
 
