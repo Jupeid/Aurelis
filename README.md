@@ -14,7 +14,7 @@ An interactive book made with python
 
 ## 📖 Sobre o Jogo
 
-**Aurelis: O Caminho da Alvorada** é uma aventura narrativa interativa onde suas escolhas moldam o destino do protagonista **Kael**. Ambientado em um mundo de fantasia repleto de entidades divinas, magias antigas e relíquias misteriosas (os *Fragmentos*), o jogo combina uma narrativa imersiva no estilo *Livro-Jogo* com mecânicas clássicas de RPG.
+**Aurelis: O Caminho da Alvorada** é uma aventura narrativa interativa onde suas escolhas moldam o destino do protagonista **Kael**. Ambientado em um mundo de fantasia repleto de entidades divinas, magias antigas e relíquias misteriosas, o jogo combina uma narrativa imersiva no estilo *Livro-Jogo* com mecânicas clássicas de RPG.
 
 ### 🌟 Principais Características
 - **Sistema de Escolhas e Consequências:** Suas decisões afetam diretamente a trama, liberando rotas alternativas e itens únicos.
@@ -22,7 +22,7 @@ An interactive book made with python
   - Sistema de atributos (Força, Destreza, Inteligência, Sorte, Magia e Vitalidade).
   - Ganho de experiência (XP), níveis e pontos de atributo para alocar.
   - Gerenciamento de inventário (itens consumíveis, relíquias e moedas).
-- **Interface Gráfica Customizável:** Desenvolvida nativamente em **Tkinter**, com suporte a **Modo Escuro (Dark Mode)** e **Modo Claro**.
+- **Interface Gráfica:** Desenvolvida nativamente em **Tkinter**, com suporte a **Modo Escuro (Dark Mode)** e **Modo Claro**.
 - **Pontos de Descanso & Salvamento:** Restaure HP/MP, distribua seus pontos acumulados e salve seu progresso para continuar quando quiser via arquivo JSON.
 
 ---
