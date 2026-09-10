@@ -14,7 +14,7 @@ An interactive book made with python
 
 ## 📖 Sobre o Jogo
 
-**Aurelis: O Caminho da Alvorada** é uma aventura narrativa interativa onde suas escolhas moldam o destino do protagonista **Kael**. Ambientado em um mundo de fantasia repleto de entidades divinas, magias antigas e relíquias misteriosas (os *Fragmentos*), o jogo combina uma narrativa imersiva no estilo *Livro-Jogo* com mecânicas clássicas de RPG.
+**Aurelis: O Caminho da Alvorada** é uma aventura narrativa interativa onde suas escolhas moldam o destino do protagonista **Kael**. Ambientado em um mundo de fantasia repleto de entidades divinas, magias antigas e relíquias misteriosas, o jogo combina uma narrativa imersiva no estilo *Livro-Jogo* com mecânicas clássicas de RPG.
 
 ### 🌟 Principais Características
 - **Sistema de Escolhas e Consequências:** Suas decisões afetam diretamente a trama, liberando rotas alternativas e itens únicos.
@@ -22,7 +22,7 @@ An interactive book made with python
   - Sistema de atributos (Força, Destreza, Inteligência, Sorte, Magia e Vitalidade).
   - Ganho de experiência (XP), níveis e pontos de atributo para alocar.
   - Gerenciamento de inventário (itens consumíveis, relíquias e moedas).
-- **Interface Gráfica Customizável:** Desenvolvida nativamente em **Tkinter**, com suporte a **Modo Escuro (Dark Mode)** e **Modo Claro**.
+- **Interface Gráfica:** Desenvolvida nativamente em **Tkinter**, com suporte a **Modo Escuro (Dark Mode)** e **Modo Claro**.
 - **Pontos de Descanso & Salvamento:** Restaure HP/MP, distribua seus pontos acumulados e salve seu progresso para continuar quando quiser via arquivo JSON.
 
 ---
@@ -33,6 +33,11 @@ An interactive book made with python
 - Tkinter — Interface gráfica de usuário (GUI).
 - JSON — Persistência e salvamento de dados do progresso.
 - PyInstaller — Empacotamento para executável Desktop.
+
+---
+## 📋 Sinopse
+
+​Em um continente dividindo-se entre a diplomacia e a guerra, um jovem de vilarejo se torna o centro de um jogo divino imprevisível. Portador de uma habilidade única que desafia as leis da magia tradicional, Kael precisa navegar entre os segredos do lendário continente Aurelis,enfrentar ameaças demoníacas e a presença de escolhidos divinos que lutam pela supremacia. Suas decisões ditam o rumo da história: você trilhará o caminho do herói, manterá a neutralidade para proteger quem ama, ou sucumbirá aos caminhos mais sombrios para alcançar o poder?
 
 ---
 
