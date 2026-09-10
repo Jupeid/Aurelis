@@ -840,6 +840,25 @@ class InterfaceRPG:
         return
 
 # -----PROCESSAMENTO DE EFEITOS IN CENA -----
+    if "novos_npcs" in cena:
+       for dados in cena["novos_npcs"]:
+          id_npc = dados["id_npc"]
+          faccao = dados.get("faccao", "neutro")
+
+          #1. Se for um dos 8 portadores
+          if id_npc in PORTADORES_PRINCIPAIS:
+             npc_obj = PORTADORES_PRINCIPAIS[id_npc]
+             npc_obj.faccao = faccao
+             self.jogador.registrar_npc(id_npc=id_npc, npc_objeto=npc_obj)
+
+          #2. Se for um NPC Secundário
+          else:
+             self.jogador.registrar_npc(
+                id_npc=id_npc,
+                nome=dados.get("nome"),
+                faccao=faccao
+             )
+
     if "item_unico_adquirido" in cena:
         for item in cena["item_unico_adquirido"]:
             self.jogador.adicionar_item_unico(item)
@@ -1279,6 +1298,11 @@ RECOMPENSAS:
 
     "capitulo_1_casa": {
         "narrativa": carregar_texto("capitulo_1_casa.txt"),
+        "novos_npcs": [
+           {"id_npc": "father_eskil", "nome": "Eskil", "faccao": "aliado"},
+           {"id_npc": "mother_yvaine", "nome": "Yvaine", "faccao": "aliado"},
+           {"id_npc": "sister_iris", "nome": "Iris", "faccao": "aliado"}
+        ],
         "proxima_cena": "cap_1_check_reacao_eskil"
     },
 
@@ -1557,6 +1581,7 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
 
     "capitulo_1_livraria": {
         "narrativa": carregar_texto("capitulo_1_livraria.txt"),
+        "novos_npcs": [{"id_npc": "mage_eldrin", "nome": "Eldrin", "faccao": "neutro"}],
         "opcoes": {
             "A": {
                 "texto": "Recusar o convite de Eldrin e acompanhar Astrid em sua busca por livros e grimórios pela biblioteca.",
@@ -1742,6 +1767,39 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
         }
     },
 
+    "capitulo_1_clinica": {
+        "narrativa": carregar_texto("capitulo_1_clinica.txt"),
+        "opcoes": {
+           "A": {
+              "texto": "Contar toda a verdade sobre o que aconteceu na livraria.",
+              "modos": [
+                 {
+                    "requisitos": [],
+                    "proxima_cena": "capitulo_1_yvaine_reveal"
+                 }
+              ]
+           },
+           "B": {
+              "texto": "Contar sobre a conversa com Eldrineth e o aviso do perigo, mas omitir a presença e as falas do Espírito de Apoio.",
+              "modos": [
+                 {
+                    "requisitos": [],
+                    "proxima_cena": "capitulo_1_yvaine_halfreveal"
+                 }
+              ]
+           },
+           "C": {
+             "texto": "Sugerir que esperem a volta de Eskil e a chegada de Eldrineth para iniciarem uma reunião com a família reunida.",
+             "modos": [
+                {
+                   "requisitos": [],
+                   "proxima_cena": "capitulo_1_reuniao"
+                }
+             ]
+           },
+        }
+    }, 
+
 #----- CAPITULOS A SEREM ESCRITOS-----
     "capitulo_1_abandono": {
         "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
@@ -1793,11 +1851,6 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
         "proxima_cena": "menu_principal"
     }, 
 
-    "capitulo_1_clinica": {
-        "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
-        "proxima_cena": "menu_principal"
-    }, 
-
     "capitulo_1_Astrid_reasons": {
         "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
         "proxima_cena": "menu_principal"
@@ -1808,6 +1861,20 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
         "proxima_cena": "menu_principal"
     }, 
 
+    "capitulo_1_yvaine_reveal": {
+        "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
+        "proxima_cena": "menu_principal"
+    }, 
+
+    "capitulo_1_yvaine_halfreveal": {
+        "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
+        "proxima_cena": "menu_principal"
+    }, 
+
+    "capitulo_1_reuniao": {
+        "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
+        "proxima_cena": "menu_principal"
+    }, 
 }
 
 # ============================================
