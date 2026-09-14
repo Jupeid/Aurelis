@@ -242,11 +242,12 @@ class Personagem:
     self.pode_distribuir_pontos = False
 # ------ATRIBUTOS BASE------
     self.forca = 0
-    self.destreza = 0
+    self.destreza = 1
     self.inteligencia = 1
     self.sorte = 1
     self.magia = 0
     self.vitalidade = 0
+    self.debuffs = {}
 # -----INVENTARIO/MOEDAS------
     self.inventario = {}
     self.inventario_unico = []
@@ -260,17 +261,27 @@ class Personagem:
     self.mp_atual = self.mp_max
 # -----COMPANIONS/INIMIGOS------
     self.npcs = {}
+# -----NOTIFICAÇÕES------
+    self.notificacoes_pendentes = []
 # -----SISTEMA DE CONSULTA DE ATRIBUTOS COM BONUS------
   def permitir_distribuicao(self, permitir: bool):
      self.pode_distribuir_pontos = permitir
 
   def obter_atributo_total(self, nome_atributo):
-    valor_base = getattr(self, nome_atributo.lower(), 0)
-    bonus_equipamentos =  0
-    for slot, item, in self.equipamentos.items():
-      if isinstance(item, dict) and "bonus" in item:
-        bonus_equipamentos += item["bonus"].get(nome_atributo, 0)
-    return valor_base + bonus_equipamentos
+        nome = nome_atributo.lower()
+        valor_base = getattr(self, nome, 0)
+        
+        # Sombra dos bônus dos equipamentos
+        bonus_equipamentos = 0
+        for slot, item in self.equipamentos.items():
+            if isinstance(item, dict) and "bonus" in item:
+                bonus_equipamentos += item["bonus"].get(nome, 0)
+
+        # Subtrai o debuff ativo (se houver)
+        penalidade = self.debuffs.get(nome, 0)
+
+        # Garante que o atributo não fique negativo (mínimo 0)
+        return max(0, valor_base + bonus_equipamentos - penalidade)
 
   def recalcular_status_maximos(self):
     self.hp_max = 20 + (self.obter_atributo_total("vitalidade") * 5)
@@ -370,11 +381,96 @@ class Personagem:
 
   def receber_dano(self, dano):
     self.hp_atual = max(0, self.hp_atual - dano)
+    self.adicionar_notificacao(f"[DANO] Você sofreu {dano} de dano! HP: {self.hp_atual}/{self.hp_max}")
 
   def descansar(self):
     self.hp_atual = self.hp_max
     self.mp_atual = self.mp_max
+
+# ----- SISTEMA DE DEBUFFS / CURA -----
+  def aplicar_debuff(self, nome_atributo, quantidade):
+        """Aplica uma penalidade a um atributo e gera notificação."""
+        nome = nome_atributo.lower()
+        self.debuffs[nome] = self.debuffs.get(nome, 0) + quantidade
+        
+        # Recalcula HP/MP se o debuff for em Vitalidade ou Magia
+        self.recalcular_status_maximos()
+        
+        self.adicionar_notificacao(
+            f"[CONDIÇÃO] Você sofreu uma penalidade! (-{quantidade} em {nome.upper()})"
+        )
+
+  def remover_debuff(self, nome_atributo, quantidade=None):
+        """Remove total ou parcialmente a penalidade de um atributo e notifica."""
+        nome = nome_atributo.lower()
+        if nome in self.debuffs:
+            if quantidade is None or quantidade >= self.debuffs[nome]:
+                del self.debuffs[nome]
+            else:
+                self.debuffs[nome] -= quantidade
+                
+            self.recalcular_status_maximos()
+            self.adicionar_notificacao(
+                f"[CURA] Sua condição melhorou! (Penalidade de {nome.upper()} removida/reduzida)"
+            )
+
+  def curar_todos_debuffs(self):
+        """Limpa todos os debuffs (ex: ao descansar ou usar poção completa)."""
+        if self.debuffs:
+            self.debuffs.clear()
+            self.recalcular_status_maximos()
+            self.adicionar_notificacao("[CURA] Todos os seus ferimentos e debuffs foram totalmente curados!")
+
 # -----METODOS DE INVENTARIO UNICO/CONSUMIVEL------
+  def equipar_item(self, item):
+        if hasattr(item, "to_dict"):
+            item_dict = item.to_dict()
+        elif isinstance(item, dict):
+            item_dict = item
+        else:
+            return False
+
+        nome_item = item_dict.get("nome", "Item Desconhecido")
+        slot = item_dict.get("slot", "reliquia_1")
+
+        if not self.tem_item(nome_item):
+            self.adicionar_item(nome_item)
+
+        if slot in self.equipamentos:
+            self.desequipar_item(slot)
+
+        self.equipamentos[slot] = item_dict
+        self.recalcular_status_maximos()
+
+        # MONTAGEM DA NOTIFICAÇÃO COM BÔNUS
+        texto_bonus = ""
+        if "bonus" in item_dict and isinstance(item_dict["bonus"], dict):
+            lista_bonus = [f"+{val} {attr.upper()[:3]}" for attr, val in item_dict["bonus"].items()]
+            if lista_bonus:
+                texto_bonus = f", BÔNUS: {', '.join(lista_bonus)}"
+
+        self.adicionar_notificacao(
+            f"[EQUIPAMENTO] Você equipou '{nome_item}' no slot [{slot.upper()}]{texto_bonus}!"
+        )
+        return True
+
+  def desequipar_item(self, slot):
+        """
+        Remove o item do slot especificado, recalcula status e retorna o item removido.
+        """
+        if slot in self.equipamentos:
+            item_removido = self.equipamentos.pop(slot)
+            nome_item = item_removido.get("nome", "Item") if isinstance(item_removido, dict) else str(item_removido)
+
+            # Recalcula HP/MP máximos (caso o item desse bônus de Vitalidade/Magia)
+            self.recalcular_status_maximos()
+
+            # Gera notificação para a tela
+            self.adicionar_notificacao(f"[EQUIPAMENTO] '{nome_item}' foi desequipado do slot [{slot.upper()}].")
+
+            return item_removido
+        return None
+
   def adicionar_item(self, nome_item, quantidade=1):
     self.inventario[nome_item] = (
         self.inventario.get(nome_item, 0) + quantidade
@@ -409,10 +505,12 @@ class Personagem:
 
   def adicionar_moedas(self, quantidade, multiplicador=1):
     self.moedas += int(quantidade * multiplicador)
+    self.adicionar_notificacao(f"[MOEDAS] +{quantidade}C (Total: {self.moedas}C).")
 
   def gastar_moedas(self, quantidade):
     if self.tem_moedas(quantidade):
       self.moedas -= quantidade
+      self.adicionar_notificacao(f"[MOEDAS] -{quantidade}C (Total: {self.moedas}C).")
       return True
     return False
 #-----SISTEMA DE CONHECIMENTO INVISÍVEL-----
@@ -424,11 +522,17 @@ class Personagem:
 # -----SISTEMA DE NIVEL E EXPERIENCIA-----
   def ganhar_xp(self, quantidade_xp):
     self.experiencia += quantidade_xp
+    self.adicionar_notificacao(f"[XP] Você ganhou {quantidade_xp} de experiência!")
+
     while self.experiencia >= self.exp_para_proximo_nivel:
         self.experiencia -= self.exp_para_proximo_nivel
         self.nivel += 1
         self.pontos_disponiveis += 1
         self.exp_para_proximo_nivel = int(self.exp_para_proximo_nivel * 1.5)
+        self.adicionar_notificacao(
+           f"[LEVEL UP!] Você alcançou o Nível {self.nivel}! "
+           f"Você possui {self.pontos_disponiveis} pontos de atributos disponíveis!"
+        )
 # -----METODOS DE NPCS------
   def registrar_npc(self, id_npc, npc_objeto=None, nome=None, faccao="neutro"):
     if id_npc not in self.npcs:
@@ -440,6 +544,27 @@ class Personagem:
   def obter_npc(self, id_npc):
     return self.npcs.get(id_npc)
 
+  def aplicar_efeitos_npc(self, id_npc, acao, nova_faccao=None):
+    # Busca um NPC Registrado e aplica uma alteração de estado.
+    npc = self.obter_npc(id_npc)
+    if npc:
+       if acao == "imobilizar":
+          npc.imobilizar()
+       elif acao == "abater":
+          npc.abater()
+       elif acao == "mudar_faccao" and nova_faccao:
+          npc.faccao = nova_faccao
+
+  def adicionar_notificacao(self, mensagem):
+        """Guarda uma notificação para ser exibida no próximo carregamento de cena."""
+        self.notificacoes_pendentes.append(f"✨ {mensagem}")
+
+  def consumir_notificacoes(self):
+        """Retorna todas as notificações acumuladas e limpa a fila."""
+        notifs = list(self.notificacoes_pendentes)
+        self.notificacoes_pendentes.clear()
+        return notifs
+  
 # =======================================
 # FUNÇÃO DE SALVAR/CARREGAR
 # =======================================
@@ -537,14 +662,14 @@ class InterfaceRPG:
         self.cor_painel = "#2a2a2a"
         self.cor_texto = "#e0e0e0"
         self.cor_destaque = "#7289da"
-        self.cor_botao = "#36393f"
+        self.cor_botao = "#7289da"
         self.cor_botao_hover = "#4f545c"
       else:
         self.cor_fundo = "#f2f3f5"
         self.cor_painel = "#ffffff"
         self.cor_texto = "#2e3338"
         self.cor_destaque = "#4e5d94"
-        self.cor_botao = "#e3e5e8"
+        self.cor_botao = "#4e5d94"
         self.cor_botao_hover = "#d1d5da"
 
 # =======================================
@@ -687,13 +812,20 @@ class InterfaceRPG:
 # 3.4 FUNÇÕES AUXILIARES E TEMAS
 # ======================================
   def escrever_narrativa(self, texto, limpar=True):
-      self.area_texto.config(state="normal")
-      if limpar:
+    self.area_texto.config(state="normal")
+    
+    # Se limpar=True, apaga o texto antigo. Se limpar=False, apenas faz um append no final!
+    if limpar:
         self.area_texto.delete("1.0", tk.END)
-      self.area_texto.insert(tk.END, texto + "\n\n")
-      self.area_texto.config(state="disabled")
-      self.area_texto.yview_moveto(0.0)
-
+    
+    # Insere o novo trecho de texto
+    self.area_texto.insert(tk.END, texto + "\n\n")
+    
+    self.area_texto.config(state="disabled")
+    
+    # Rola automaticamente a caixa para o final para mostrar o novo texto
+    self.area_texto.yview_moveto(0.0)
+      
   def atualizar_botoes_escolha(self, opcoes_botoes):
     for widget in self.frame_escolhas.winfo_children():
         widget.destroy()
@@ -766,6 +898,15 @@ class InterfaceRPG:
     unicos_str = (
         ", ".join(j.inventario_unico) if j.inventario_unico else "Vazio"
     )
+    if j.equipamentos:
+            lista_eq = []
+            for slot, item in j.equipamentos.items():
+                nome_item = item.get("nome", "Item") if isinstance(item, dict) else str(item)
+                lista_eq.append(f"{slot.capitalize()}: {nome_item}")
+            equipamentos_str = ", ".join(lista_eq)
+    else:
+            equipamentos_str = "Nenhum item equipado"
+        
     hud = (
         f"Nome: {j.nome} | Nível: {j.nivel} EXP: {j.experiencia}/{j.exp_para_proximo_nivel} | Pontos Disponíveis: {j.pontos_disponiveis} ===\n"
         f"HP: {j.hp_atual}/{j.hp_max} | MP: {j.mp_atual}/{j.mp_max}\n"
@@ -773,6 +914,7 @@ class InterfaceRPG:
         f"INT: {j.obter_atributo_total('inteligencia')} | SOR: {j.obter_atributo_total('sorte')}\n"
         f"MAG: {j.obter_atributo_total('magia')} | VIT: {j.obter_atributo_total('vitalidade')}\n"
         f"Moedas: {j.moedas}C\n"
+        f"Equipamento: {equipamentos_str}\n"
         f"Inventário: {itens_str}\n"
         f"Itens Únicos: {unicos_str}\n"
         + "=" * 60
@@ -780,28 +922,8 @@ class InterfaceRPG:
     return hud
 
   def avaliar_condicao_oculta(self, condicao):
-    j = self.jogador
-    tipo = condicao.get("tipo")
-    if tipo in ["sorte", "chance_sorte"]:
-      base = condicao.get("requisito_base", 90)
-      bonus = condicao.get("bonus_por_ponto", 10)
-      limite = max(0, base - ((j.obter_atributo_total("sorte") - 1) * bonus))
-      return random.randint(0, 100) >= limite
-    elif tipo == "atributo":
-        return j.tem_atributo(condicao["nome"], condicao["valor"])
-    elif tipo == "item":
-        return j.tem_item(condicao["nome"], condicao.get("quantidade", 1))
-    elif tipo == "item_unico":
-        return j.tem_item_unico(condicao["nome"])
-    elif tipo == "moedas":
-        return j.tem_moedas(condicao["valor"])
-    elif tipo == "hp_minimo":
-        return j.hp_atual >= condicao["valor"]
-    elif tipo == "mp_minimo":
-        return j.mp_atual >= condicao["valor"]
-    elif tipo in ["conhecimento", "flag"]:
-        return j.tem_conhecimento(condicao["nome"])
-    return False
+        """Atalho de compatibilidade que repassa para a função global."""
+        return avaliar_condicao_oculta(self.jogador, condicao)
 
   def carregar_cena(self, id_cena):
 # 1. PRIMEIRO: Intercepta o comando do menu antes de checar self.cenas
@@ -859,6 +981,17 @@ class InterfaceRPG:
                 faccao=faccao
              )
 
+    if "efeito_npc" in cena:
+       efeito = cena["efeito_npc"]
+       self.jogador.aplicar_efeitos_npc(
+          id_npc=efeito["id_npc"],
+          acao=efeito["acao"],
+          nova_faccao=efeito.get("nova_faccao")
+       )
+
+    if "dano_recebido" in cena:
+       self.jogador.receber_dano(cena["dano_recebido"])
+
     if "item_unico_adquirido" in cena:
         for item in cena["item_unico_adquirido"]:
             self.jogador.adicionar_item_unico(item)
@@ -870,6 +1003,14 @@ class InterfaceRPG:
               )
             else:
               self.jogador.adicionar_item(entrada, 1)
+
+    if "equipar_item" in cena:
+       item = cena["equipar_item"]
+       if isinstance(item, str) and item in FRAGMENTOS_REGISTRADOS:
+          item = FRAGMENTOS_REGISTRADOS[item]
+
+       self.jogador.equipar_item(item)
+    
     if "xp_ganha" in cena:
       self.jogador.ganhar_xp(cena["xp_ganha"])
     if "moedas_ganhas" in cena:
@@ -884,19 +1025,39 @@ class InterfaceRPG:
     if cena.get("permite_descanso", False):
       self.jogador.descansar()
 
-# Construçao da narrativa visual
+    processar_efeitos_debuff(self.jogador, cena)
+
+# ----- CONSTRUÇÃO DA NARRATIVA VISUAL -----
+    notificacoes_completas = self.jogador.consumir_notificacoes()
+    if "notificacao" in cena:
+        notif_estatica = cena["notificacao"]
+        if isinstance(notif_estatica, list):
+            notificacoes_completas.extend([f"✨ {m}" for m in notif_estatica])
+        else:
+            notificacoes_completas.append(f"✨ {notif_estatica}")    
+
     texto_exibicao = ""
     if cena.get("HUD", False):
-      texto_exibicao += self.obter_texto_hud() + "\n\n"
+        texto_exibicao += self.obter_texto_hud() + "\n\n"
 
     if cena.get("titulo"):
-      texto_exibicao += f"=== {cena['titulo']} ===\n\n"
+        texto_exibicao += f"=== {cena['titulo']} ===\n\n"
 
-    narrativa = cena.get("narrativa")
-    if narrativa:
-      texto_exibicao += formatar_texto(narrativa)
+    if notificacoes_completas:
+        for msg in notificacoes_completas:
+            texto_exibicao += f"{msg}\n"
+        texto_exibicao += "─" * 45 + "\n\n"
+
+    # CHAMA A FUNÇÃO AUXILIAR: Concatena narrativa + blocos sequenciais em um só texto!
+    texto_narrativa, proxima_dinamica = construir_texto_narrativa(self.jogador, cena)
+    texto_exibicao += texto_narrativa
 
     self.escrever_narrativa(texto_exibicao)
+
+    # Se a cena em árvore já definiu uma próxima cena automática (ex: fase_2 ou game_over)
+    # E a cena original NÃO tinha botões manuais de opção:
+    if proxima_dinamica and "opcoes" not in cena:
+        cena["proxima_cena"] = proxima_dinamica
 
 # Contrução dos Botões de escolha
     opcoes_botoes = []
@@ -1020,7 +1181,6 @@ class InterfaceRPG:
      )
      btn_guardar.pack(pady=15)
 
-
   def testar_requisitos(self, lista_requisitos):
     for req in lista_requisitos:
         tipo = req["tipo"]
@@ -1045,109 +1205,309 @@ class InterfaceRPG:
     return True
 
   def selecionar_opcao(self, opcao_escolhida):
-    if "proxima_cena" in opcao_escolhida and "modos" not in opcao_escolhida:
-      self.carregar_cena(opcao_escolhida["proxima_cena"])
-      return
+        if "proxima_cena" in opcao_escolhida and "modos" not in opcao_escolhida:
+            self.carregar_cena(opcao_escolhida["proxima_cena"])
+            return
 
-    modos = opcao_escolhida.get("modos", [])
-    modo_bem_sucedido = None
+        modos = opcao_escolhida.get("modos", [])
+        modo_bem_sucedido = None
 
-    for modo in modos:
-      if self.testar_requisitos(modo.get("requisitos", [])):
-        modo_bem_sucedido = modo
-        break
+        for modo in modos:
+            if self.testar_requisitos(modo.get("requisitos", [])):
+                modo_bem_sucedido = modo
+                break
 
-    if modo_bem_sucedido:
-      for req in modo_bem_sucedido.get("requisitos", []):
-        if req["tipo"] == "magia":
-          self.jogador.consumir_mp(req["custo_mp"])
+        if modo_bem_sucedido:
+            # 1. Consumo de Recursos e Recompensas
+            for req in modo_bem_sucedido.get("requisitos", []):
+                if req["tipo"] == "magia":
+                    self.jogador.consumir_mp(req["custo_mp"])
 
-      if "conhecimento_adquirido" in modo_bem_sucedido:
-        for segredo in modo_bem_sucedido["conhecimento_adquirido"]:
-          self.jogador.adicionar_conhecimento(segredo)
+            if "conhecimento_adquirido" in modo_bem_sucedido:
+                for segredo in modo_bem_sucedido["conhecimento_adquirido"]:
+                    self.jogador.adicionar_conhecimento(segredo)
 
-      if "item_unico_adquirido" in modo_bem_sucedido:
-        for item in modo_bem_sucedido["item_unico_adquirido"]:
-          self.jogador.adicionar_item_unico(item)
+            if "item_unico_adquirido" in modo_bem_sucedido:
+                for item in modo_bem_sucedido["item_unico_adquirido"]:
+                    self.jogador.adicionar_item_unico(item)
+                    self.jogador.adicionar_notificacao(f"[INVENTÁRIO] Você adquiriu o item único: {item}")
 
-      if "item_unico_removido" in modo_bem_sucedido:
-        for item in modo_bem_sucedido["item_unico_removido"]:
-          self.jogador.remover_item_unico(item)
+            if "item_unico_removido" in modo_bem_sucedido:
+                for item in modo_bem_sucedido["item_unico_removido"]:
+                    self.jogador.remover_item_unico(item)
+                    self.jogador.adicionar_notificacao(f"[INVENTÁRIO] O item único {item} foi perdido!")
 
-      if "item_adquirido" in modo_bem_sucedido:
-        for entrada in modo_bem_sucedido["item_adquirido"]:
-          if isinstance(entrada, dict):
-            self.jogador.adicionar_item(
-                entrada["item"], entrada.get("quantidade", 1)
-            )
-          else:
-            self.jogador.adicionar_item(entrada, 1)
+            if "item_adquirido" in modo_bem_sucedido:
+                for entrada in modo_bem_sucedido["item_adquirido"]:
+                    if isinstance(entrada, dict):
+                        nome_item = entrada["item"]
+                        quantidade = entrada.get("quantidade", 1)
+                        self.jogador.adicionar_item(nome_item, quantidade)
+                        self.jogador.adicionar_notificacao(f"[INVENTÁRIO] Você recebeu {quantidade}x {nome_item}!")
+                    else:
+                        nome_item = entrada
+                        quantidade = 1
+                        self.jogador.adicionar_item(nome_item, quantidade)
+                        self.jogador.adicionar_notificacao(f"[INVENTÁRIO] Você recebeu {quantidade}x {nome_item}!")
 
-      if "item_removido" in modo_bem_sucedido:
-        for entrada in modo_bem_sucedido["item_removido"]:
-          if isinstance(entrada, dict):
-            self.jogador.remover_item(
-                entrada["item"], entrada.get("quantidade", 1)
-            )
-          else:
-            self.jogador.remover_item(entrada, 1)
+            if "item_removido" in modo_bem_sucedido:
+                for entrada in modo_bem_sucedido["item_removido"]:
+                    if isinstance(entrada, dict):
+                        nome_item = entrada["item"]
+                        quantidade = entrada.get("quantidade", 1)            
+                        self.jogador.remover_item(nome_item, quantidade)
+                        self.jogador.adicionar_notificacao(f"[INVENTÁRIO] {quantidade}x {nome_item} foram perdidos!")
+                    else:
+                        nome_item = entrada
+                        quantidade = 1            
+                        self.jogador.remover_item(nome_item, quantidade)
+                        self.jogador.adicionar_notificacao(f"[INVENTÁRIO] {quantidade}x {nome_item} foi perdido!")
 
-      if "equipar_item" in modo_bem_sucedido:
-         item = modo_bem_sucedido["equipar_item"]
-         # Garante que está no inventário e equipa no slot indicado
-         if not self.jogador.tem_item(item["nome"]):
-          self.jogador.adicionar_item(item["nome"])
-         self.jogador.equipar_item(item)  # Recalcula HP, MP e bônus automaticamente
+            if "equipar_item" in modo_bem_sucedido:
+                item = modo_bem_sucedido["equipar_item"]
+                if isinstance(item, str) and item in FRAGMENTOS_REGISTRADOS:
+                    item = FRAGMENTOS_REGISTRADOS[item]
+                self.jogador.equipar_item(item)
 
-      if "perder_equipamento_slot" in modo_bem_sucedido:
-        slot = modo_bem_sucedido["perder_equipamento_slot"]
-        item_perdido = self.jogador.desequipar_item(slot)
-        if item_perdido:
-            self.jogador.remover_item(item_perdido["nome"])
+            if "perder_equipamento_slot" in modo_bem_sucedido:
+                slot = modo_bem_sucedido["perder_equipamento_slot"]
+                item_perdido = self.jogador.desequipar_item(slot)
+                if item_perdido and isinstance(item_perdido, dict) and "nome" in item_perdido:
+                    self.jogador.remover_item(item_perdido["nome"])
 
-      if "xp_ganha" in modo_bem_sucedido:
-        self.jogador.ganhar_xp(modo_bem_sucedido["xp_ganha"])
+            if "xp_ganha" in modo_bem_sucedido:
+                self.jogador.ganhar_xp(modo_bem_sucedido["xp_ganha"])
 
-      if "dano_recebido" in modo_bem_sucedido:
-        self.jogador.receber_dano(modo_bem_sucedido["dano_recebido"])
+            if "dano_recebido" in modo_bem_sucedido:
+                self.jogador.receber_dano(modo_bem_sucedido["dano_recebido"])
 
-      if self.jogador.hp_atual <= 0:
-        messagebox.showerror(
-            "Game Over", "Você sucumbiu aos ferimentos na jornada..."
-        )
-        self.exibir_menu_inicial()
-        return
+            if self.jogador.hp_atual <= 0:
+                messagebox.showerror(
+                    "Game Over", "Você sucumbiu aos ferimentos na jornada..."
+                )
+                self.exibir_menu_inicial()
+                return
 
-      if "novo_npc" in modo_bem_sucedido:
-        dados = modo_bem_sucedido["novo_npc"]
-        id_npc = dados["id_npc"]
-        if id_npc in PORTADORES_PRINCIPAIS:
-          npc_obj = PORTADORES_PRINCIPAIS[id_npc]
-          npc_obj.faccao = dados.get("faccao", "neutro")
-          self.jogador.registrar_npc(id_npc=id_npc, npc_objeto=npc_obj)
+            if "novo_npc" in modo_bem_sucedido:
+                dados = modo_bem_sucedido["novo_npc"]
+                id_npc = dados["id_npc"]
+                if id_npc in PORTADORES_PRINCIPAIS:
+                    npc_obj = PORTADORES_PRINCIPAIS[id_npc]
+                    npc_obj.faccao = dados.get("faccao", "neutro")
+                    self.jogador.registrar_npc(id_npc=id_npc, npc_objeto=npc_obj)
+                else:
+                    self.jogador.registrar_npc(
+                        id_npc=id_npc,
+                        nome=dados.get("nome"),
+                        faccao=dados.get("faccao", "neutro"),
+                    )
+
+            if "efeito_npc" in modo_bem_sucedido:
+                efeito = modo_bem_sucedido["efeito_npc"]
+                self.jogador.aplicar_efeitos_npc(
+                    id_npc=efeito["id_npc"],
+                    acao=efeito["acao"],
+                    nova_faccao=efeito.get("nova_faccao")
+                )
+
+            if "ganho_moedas" in modo_bem_sucedido:
+                self.jogador.adicionar_moedas(
+                    modo_bem_sucedido["ganho_moedas"],
+                    multiplicador=modo_bem_sucedido.get("multiplicador_moedas", 1),
+                )
+
+            if "gasto_moedas" in modo_bem_sucedido:
+                self.jogador.gastar_moedas(modo_bem_sucedido["gasto_moedas"])
+
+            processar_efeitos_debuff(self.jogador, modo_bem_sucedido)
+
+            # 2. Transição de Cena ou Exibição da Narrativa Intermediária
+            proxima = modo_bem_sucedido["proxima_cena"]
+            narrativa_modo = modo_bem_sucedido.get("narrativa")
+
+            if narrativa_modo:
+                # Exibe a narrativa do modo sem apagar o histórico atual
+                self.escrever_narrativa(formatar_texto(narrativa_modo), limpar=False)
+                
+                # Substitui os botões anteriores por um único botão 'Continuar'
+                self.atualizar_botoes_escolha([
+                    ("➡️", "Continuar", lambda: self.carregar_cena(proxima))
+                ])
+            else:
+                # Se não houver narrativa no modo, carrega a próxima cena diretamente
+                self.carregar_cena(proxima)
+
         else:
-          self.jogador.registrar_npc(
-              id_npc=id_npc,
-              nome=dados.get("nome"),
-              faccao=dados.get("faccao", "neutro"),
-          )
+            messagebox.showwarning(
+                "Requisitos não atendidos",
+                "Você não possui os requisitos necessários para escolher esta opção.",
+            )
 
-      if "ganho_moedas" in modo_bem_sucedido:
-        self.jogador.adicionar_moedas(
-            modo_bem_sucedido["ganho_moedas"],
-            multiplicador=modo_bem_sucedido.get("multiplicador_moedas", 1),
-        )
+# =======================================
+# FUNÇÕES GLOBAIS
+# =======================================
+def avaliar_condicao_oculta(jogador, condicao):
+    tipo = condicao.get("tipo")
+    
+    if tipo in ["sorte", "chance_sorte"]:
+        base = condicao.get("requisito_base", 90)
+        bonus = condicao.get("bonus_por_ponto", 10)
+        sorte_total = jogador.obter_atributo_total("sorte")
+        limite = max(0, base - ((sorte_total - 1) * bonus))
+        dado = random.randint(0, 100)
+        
+        sucesso = dado >= limite
+        if sucesso:
+            jogador.adicionar_notificacao(
+                f"[SORTE] Rolou {dado}/100 (Meta: {limite}+ | SOR: {sorte_total}) - SUCESSO!"
+            )
+        else:
+            jogador.adicionar_notificacao(
+                f"[SORTE] Rolou {dado}/100 (Meta: {limite}+ | SOR: {sorte_total}) - FALHA!"
+            )
+        return sucesso
 
-      if "gasto_moedas" in modo_bem_sucedido:
-        self.jogador.gastar_moedas(modo_bem_sucedido["gasto_moedas"])
+    elif tipo == "atributo":
+        return jogador.tem_atributo(condicao["nome"], condicao["valor"])
 
-      proxima = modo_bem_sucedido["proxima_cena"]
-      self.carregar_cena(proxima)
-    else:
-      messagebox.showwarning(
-          "Requisitos não atendidos",
-          "Você não possui os requisitos necessários para escolher esta opção.",
-      )
+    elif tipo == "item":
+        return jogador.tem_item(condicao["nome"], condicao.get("quantidade", 1))
+
+    elif tipo == "item_unico":
+        return jogador.tem_item_unico(condicao["nome"])
+
+    elif tipo == "moedas":
+        return jogador.tem_moedas(condicao["valor"])
+
+    elif tipo == "hp_minimo":
+        return jogador.hp_atual >= condicao["valor"]
+
+    elif tipo == "mp_minimo":
+        return jogador.mp_atual >= condicao["valor"]
+
+    elif tipo in ["conhecimento", "flag"]:
+        return jogador.tem_conhecimento(condicao["nome"])
+
+    return False
+
+def processar_efeitos_debuff(jogador, origem_dados):
+    if "aplicar_debuff" in origem_dados:
+        dados = origem_dados["aplicar_debuff"]
+        if isinstance(dados, dict):
+            jogador.aplicar_debuff(dados["atributo"], dados.get("valor", 1))
+        elif isinstance(dados, list):
+            for item in dados:
+                jogador.aplicar_debuff(item["atributo"], item.get("valor", 1))
+
+    if "remover_debuff" in origem_dados:
+        dados = origem_dados["remover_debuff"]
+        if dados == "todos":
+            jogador.curar_todos_debuffs()
+        elif isinstance(dados, dict):
+            jogador.remover_debuff(dados["atributo"], dados.get("valor"))
+
+def construir_texto_narrativa(jogador, cena):
+    paragrafos = []
+    proxima_cena_dinamica = None
+
+    # 1. Narrativa base
+    if cena.get("narrativa"):
+        paragrafos.append(formatar_texto(cena["narrativa"]))
+
+    # 2. Processamento dos blocos em árvore
+    if "blocos_sequenciais" in cena:
+        for bloco in cena["blocos_sequenciais"]:
+            
+            if "check_oculto" in bloco:
+                # Executa o check principal
+                passou_principal = avaliar_condicao_oculta(jogador, bloco["check_oculto"])
+                
+                # INJETAR NOTIFICAÇÃO DO CHECK PRINCIPAL NO TEXTO (Evita o delay)
+                notifs_temp = jogador.consumir_notificacoes()
+                if notifs_temp:
+                    paragrafos.append("\n".join(notifs_temp))
+
+                if passou_principal:
+                    ramo = bloco.get("sucesso", {})
+                    if ramo.get("texto"):
+                        paragrafos.append(formatar_texto(ramo["texto"]))
+
+                    # Processa Sub-Checks
+                    sub_passou = False
+                    if "sub_checks" in ramo:
+                        for sub in ramo["sub_checks"]:
+                            if avaliar_condicao_oculta(jogador, sub["check"]):
+                                sub_passou = True
+                                
+                                # Captura a notificação de dado/efeito gerada por este subcheck e insere no texto!
+                                notifs_sub = jogador.consumir_notificacoes()
+                                if notifs_sub:
+                                    paragrafos.append("\n".join(notifs_sub))
+
+                                paragrafos.append(formatar_texto(sub["texto"]))
+                                
+                                # Processa efeitos do sub-check (ex: cura)
+                                if "efeitos" in sub:
+                                    ef = sub["efeitos"]
+                                    if "curar_hp" in ef: 
+                                        jogador.hp_atual = min(jogador.hp_max, jogador.hp_atual + ef["curar_hp"])
+                                    if "curar_mp" in ef: 
+                                        jogador.mp_atual = min(jogador.mp_max, jogador.mp_atual + ef["curar_mp"])
+
+                                proxima_cena_dinamica = sub.get("proxima_cena")
+                                break
+
+                    if not sub_passou:
+                        if ramo.get("texto_falha_sub_checks"):
+                            paragrafos.append(formatar_texto(ramo["texto_falha_sub_checks"]))
+                        if ramo.get("proxima_cena"):
+                            proxima_cena_dinamica = ramo["proxima_cena"]
+
+                else:
+                    # Ramo de Falha Principal
+                    ramo = bloco.get("falha", {})
+                    if ramo.get("texto"):
+                        paragrafos.append(formatar_texto(ramo["texto"]))
+
+                    # Aplica punições imediatas da falha
+                    if "dano_recebido" in ramo:
+                        jogador.receber_dano(ramo["dano_recebido"])
+                    if "aplicar_debuff" in ramo:
+                        processar_efeitos_debuff(jogador, ramo)
+
+                    # Captura notificações geradas pelo dano/debuff
+                    notifs_falha = jogador.consumir_notificacoes()
+                    if notifs_falha:
+                        paragrafos.append("\n".join(notifs_falha))
+
+                    # Check de Resgate (Sorte/Vitalidade)
+                    dados_resgate = ramo.get("check_resgate") or ramo.get("cheque_resgate")
+                    if dados_resgate:
+                        passou_resgate = avaliar_condicao_oculta(jogador, dados_resgate)
+                        
+                        # Captura e injeta a notificação da rolagem de sorte no texto!
+                        notifs_resgate = jogador.consumir_notificacoes()
+                        if notifs_resgate:
+                            paragrafos.append("\n".join(notifs_resgate))
+
+                        if passou_resgate:
+                            resg = ramo.get("sucesso_resgate", {})
+                            if resg.get("texto"): 
+                                paragrafos.append(formatar_texto(resg["texto"]))
+                            proxima_cena_dinamica = resg.get("proxima_cena")
+                        else:
+                            resg = ramo.get("falha_resgate", {})
+                            if resg.get("texto"): 
+                                paragrafos.append(formatar_texto(resg["texto"]))
+                            proxima_cena_dinamica = resg.get("proxima_cena")
+                    elif ramo.get("proxima_cena"):
+                        proxima_cena_dinamica = ramo["proxima_cena"]
+
+            elif "texto" in bloco:
+                paragrafos.append(formatar_texto(bloco["texto"]))
+
+    texto_final = "\n\n".join(paragrafos)
+    return texto_final, proxima_cena_dinamica
 
 # ============================================
 # 4. BANCO DE DADOS DE CENAS E NARRATIVAS
@@ -1194,16 +1554,16 @@ cenas = {
                   }
               ]
             },
-          "C": {
-              "texto": """Ignorar o apelo da garota e a notificação do Sistema, virando as costas e indo embora.""",
-              "modos": [
-                  {
-                      "requisitos": [],
-                      "narrativa": """Decido que não vale a pena arriscar minha vida por uma desconhecida. Viro as costas e me preparo para ir embora.""",
-                      "proxima_cena": "capitulo_1_abandono",
-                  }
-              ],
-            },
+#          "C": {
+#              "texto": """Ignorar o apelo da garota e a notificação do Sistema, virando as costas e indo embora.""",
+#              "modos": [
+#                  {
+#                      "requisitos": [],
+#                      "narrativa": """Decido que não vale a pena arriscar minha vida por uma desconhecida. Viro as costas e me preparo para ir embora.""",
+#                      "proxima_cena": "capitulo_1_abandono",
+#                  }
+#              ],
+#            },
         }
     },
 
@@ -1274,25 +1634,25 @@ de se encontrar com o Deus da Morte)
                     }
                 ]
             },
-            "B": {
-                "texto": "Deixar o lobo escapar para preservar a mana da garota até sairmos da floresta.",
-                "modos": [
-                    {
-                        "requisitos": [],
-                        "narrativa": """Decido poupar as energias de Astrid. Deixo o animal assustado fugir manco pela vegetação.
-===========================================================
-[Missão Concluída!]
-Aura está satisfeita, garantindo ao hospedeiro uma
-oportunidade de evolução. Escolha com sabedoria!
-===========================================================
-RECOMPENSAS:
-[+5 XP]
-=========================================================== """,
-                        "xp_ganha": 5,
-                        "proxima_cena": "capitulo_1_casa",
-                    }
-                ]
-            },
+#            "B": {
+#                "texto": "Deixar o lobo escapar para preservar a mana da garota até sairmos da floresta.",
+#                "modos": [
+#                    {
+#                        "requisitos": [],
+#                        "narrativa": """Decido poupar as energias de Astrid. Deixo o animal assustado fugir manco pela vegetação.
+#===========================================================
+#[Missão Concluída!]
+#Aura está satisfeita, garantindo ao hospedeiro uma
+#oportunidade de evolução. Escolha com sabedoria!
+#===========================================================
+#RECOMPENSAS:
+#[+5 XP]
+#=========================================================== """,
+#                        "xp_ganha": 5,
+#                        "proxima_cena": "capitulo_1_casa",
+#                    }
+#                ]
+#            },
         }
     },
 
@@ -1367,15 +1727,15 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
                 ],
             },
 
-            "B": {
-                "texto": "Guardar a Pílula e não fazer nada",
-                "modos": [
-                    {
-                        "requisitos": [],
-                        "proxima_cena": "capitulo_1_casa_jantar_bencao_B",
-                    }
-                ],
-            },
+#            "B": {
+#                "texto": "Guardar a Pílula e não fazer nada",
+#                "modos": [
+#                    {
+#                        "requisitos": [],
+#                        "proxima_cena": "capitulo_1_casa_jantar_bencao_B",
+#                    }
+#                ],
+#            },
         },
     },
 
@@ -1420,21 +1780,21 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
             {"item": "Ervas Repelentes", "quantidade": 5}
         ],
         "opcoes": {
-            "A": {
-                "texto": "Ficar em casa e tentar conversar mais a fundo com o Espírito de Apoio.",
-                "modos": [
-                    {
-                      "requisitos": [
-                          {
-                              "tipo": "atributo",
-                              "nome": "inteligencia",
-                              "valor": 2
-                          }
-                      ],
-                      "proxima_cena": "capitulo_1_casa_conversa_com_espirito",
-                    }
-                ]
-            },
+#            "A": {
+#                "texto": "Ficar em casa e tentar conversar mais a fundo com o Espírito de Apoio.",
+#                "modos": [
+#                    {
+#                      "requisitos": [
+#                          {
+#                              "tipo": "atributo",
+#                              "nome": "inteligencia",
+#                              "valor": 2
+#                          }
+#                      ],
+#                      "proxima_cena": "capitulo_1_casa_conversa_com_espirito",
+#                    }
+#                ]
+#            },
             "B": {
                 "texto": "Levar Astrid para conhecer o vilarejo.",
                 "modos": [
@@ -1444,38 +1804,38 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
                     }
                 ]
             },
-            "C": {
-                "texto": "Ir com Astrid para a floresta para começar a praticar os princípios de magia.",
-                "modos": [
-                    {
-                     "requisitos": [
-                         {
-                             "tipo": "atributo",
-                             "nome": "magia",
-                             "valor": 1
-                         }
-                     ],
-                     "xp_ganha": 2,
-                     "proxima_cena": "capitulo_1_treino_na_floresta",
-                    }
-                ]
-            },
-            "D": {
-                "texto": "Treinar suas habilidades de caça e tiro utilizando o arco e flecha de Eskil.",
-                "modos": [
-                    {
-                     "requisitos": [
-                         {
-                             "tipo": "atributo",
-                             "nome": "destreza",
-                             "valor": 1
-                         }
-                     ],
-                     "xp_ganha": 2,
-                     "proxima_cena": "capitulo_1_treino_de_destreza",
-                    },
-                ]
-            },
+#            "C": {
+#                "texto": "Ir com Astrid para a floresta para começar a praticar os princípios de magia.",
+#                "modos": [
+#                    {
+#                     "requisitos": [
+#                         {
+#                             "tipo": "atributo",
+#                             "nome": "magia",
+#                             "valor": 1
+#                         }
+#                     ],
+#                     "xp_ganha": 2,
+#                     "proxima_cena": "capitulo_1_treino_na_floresta",
+#                    }
+#                ]
+#            },
+#            "D": {
+#                "texto": "Treinar suas habilidades de caça e tiro utilizando o arco e flecha de Eskil.",
+#                "modos": [
+#                    {
+#                     "requisitos": [
+#                         {
+#                             "tipo": "atributo",
+#                             "nome": "destreza",
+#                             "valor": 1
+#                         }
+#                     ],
+#                     "xp_ganha": 2,
+#                     "proxima_cena": "capitulo_1_treino_de_destreza",
+#                    },
+#                ]
+ #           },
         },
     },
 
@@ -1547,25 +1907,25 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
 
     "capitulo_1_vilarejo": {
         "narrativa": carregar_texto("capitulo_1_vilarejo.txt"),
-        "moedas_ganhas": 15,
+        "moedas_ganhas": 150,
         "opcoes": {
-            "A": {
-                "texto": "Praça Central e Feira de Comidas: Ir até a praça do vilarejo, repleta de barracas de espetinhos, guloseimas locais e uma bela fonte onde podem comer e apreciar a paisagem.",
-                "modos": [ {
-                    "requisitos": [],
-                    "proxima_cena": "capitulo_1_praca_central",
-                    },
-                ],
-            },
-            "B": {
-                "texto": "Loja de Equipamentos: Visitar o armazém de caça e usinagem. Com a possibilidade de ir até a floresta em breve, você decide se equipar adequadamente.",
-                "modos": [
-                    {
-                      "requisitos": [],
-                      "proxima_cena": "capitulo_1_loja_equipamentos",
-                    },
-                ],
-            },
+#            "A": {
+#                "texto": "Praça Central e Feira de Comidas: Ir até a praça do vilarejo, repleta de barracas de espetinhos, guloseimas locais e uma bela fonte onde podem comer e apreciar a paisagem.",
+#                "modos": [ {
+#                    "requisitos": [],
+#                    "proxima_cena": "capitulo_1_praca_central",
+#                    },
+#                ],
+#            },
+#            "B": {
+#                "texto": "Loja de Equipamentos: Visitar o armazém de caça e usinagem. Com a possibilidade de ir até a floresta em breve, você decide se equipar adequadamente.",
+#                "modos": [
+#                    {
+#                      "requisitos": [],
+#                      "proxima_cena": "capitulo_1_loja_equipamentos",
+#                    },
+#                ],
+#            },
             "C": {
                 "texto": "Livraria e Sebo: Ir à pequena livraria do vilarejo. Astrid pareceu fascinada pelo local quando passaram mais cedo.",
                 "modos": [
@@ -1583,15 +1943,15 @@ A interface translúcida do Sistema surge imediatamente diante dos meus olhos:
         "narrativa": carregar_texto("capitulo_1_livraria.txt"),
         "novos_npcs": [{"id_npc": "mage_eldrin", "nome": "Eldrin", "faccao": "neutro"}],
         "opcoes": {
-            "A": {
-                "texto": "Recusar o convite de Eldrin e acompanhar Astrid em sua busca por livros e grimórios pela biblioteca.",
-                "modos": [
-                    {
-                      "requisitos": [],
-                      "proxima_cena": "capitulo_1_livraria_busca_com_astrid",
-                    }
-                ]
-            },
+#            "A": {
+#                "texto": "Recusar o convite de Eldrin e acompanhar Astrid em sua busca por livros e grimórios pela biblioteca.",
+#                "modos": [
+#                    {
+#                      "requisitos": [],
+#                      "proxima_cena": "capitulo_1_livraria_busca_com_astrid",
+#                    }
+#                ]
+#            },
             "B": {
                 "texto": "Aceitar o convite e deixar Astrid explorando as prateleiras enquanto conversa a sós com o arquimago elfo.",
                 "modos": [
@@ -1746,15 +2106,15 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
     "capitulo_1_eldrin_truth": {
         "narrativa": carregar_texto("capitulo_1_eldrin_truth.txt"),
         "opcoes": {
-           "A": {
-              "texto": "Revelar a conversa que teve com Eldrin e confrontar Astrid sobre suas reais intenções.",
-              "modos": [
-                 {
-                    "requisitos": [],
-                    "proxima_cena": "capitulo_1_Astrid_reasons"
-                 }
-              ]
-           },
+#           "A": {
+#              "texto": "Revelar a conversa que teve com Eldrin e confrontar Astrid sobre suas reais intenções.",
+#              "modos": [
+#                 {
+#                    "requisitos": [],
+#                    "proxima_cena": "capitulo_1_Astrid_reasons"
+#                 }
+#              ]
+#           },
            "B": {
               "texto": "Desviar do assunto e seguir imediatamente para a clínica de Yvaine.",
               "modos": [
@@ -1770,24 +2130,24 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
     "capitulo_1_clinica": {
         "narrativa": carregar_texto("capitulo_1_clinica.txt"),
         "opcoes": {
-           "A": {
-              "texto": "Contar toda a verdade sobre o que aconteceu na livraria.",
-              "modos": [
-                 {
-                    "requisitos": [],
-                    "proxima_cena": "capitulo_1_yvaine_reveal"
-                 }
-              ]
-           },
-           "B": {
-              "texto": "Contar sobre a conversa com Eldrineth e o aviso do perigo, mas omitir a presença e as falas do Espírito de Apoio.",
-              "modos": [
-                 {
-                    "requisitos": [],
-                    "proxima_cena": "capitulo_1_yvaine_halfreveal"
-                 }
-              ]
-           },
+#           "A": {
+#              "texto": "Contar toda a verdade sobre o que aconteceu na livraria.",
+#              "modos": [
+#                 {
+#                    "requisitos": [],
+#                    "proxima_cena": "capitulo_1_yvaine_reveal"
+#                 }
+#              ]
+#           },
+#           "B": {
+#              "texto": "Contar sobre a conversa com Eldrineth e o aviso do perigo, mas omitir a presença e as falas do Espírito de Apoio.",
+#              "modos": [
+#                 {
+#                    "requisitos": [],
+#                    "proxima_cena": "capitulo_1_yvaine_halfreveal"
+#                 }
+#              ]
+#           },
            "C": {
              "texto": "Sugerir que esperem a volta de Eskil e a chegada de Eldrineth para iniciarem uma reunião com a família reunida.",
              "modos": [
@@ -1800,6 +2160,464 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
         }
     }, 
 
+    "capitulo_1_reuniao": {
+        "narrativa": carregar_texto("capitulo_1_reuniao.txt"),
+        "moedas_ganhas": 500,
+        "proxima_cena": "capitulo_1_floresta_heroica"
+    }, 
+
+    "capitulo_1_floresta_heroica": {
+        "HUD": True,
+        "narrativa": carregar_texto("capitulo_1_floresta_heroica.txt"),
+        "equipar_item": {
+           "nome": "Armadura de Couro",
+           "slot": "Armaduras",
+           "bonus": {"destreza": 1}
+        },
+        "proxima_cena": "cap_1_check_reacao_floresta"
+    }, 
+
+    "cap_1_check_reacao_floresta": {
+       "checks_ocultos": [
+          {
+             "tipo": "sorte",
+             "requisito_base": 60,
+             "bonus_por_ponto": 10,
+             "cena_sucesso": "cap_1_check_reacao_floresta_sucesso"
+          },
+       ],
+       "cena_falha": "cap_1_check_reacao_floresta_resgate",
+    }, 
+
+    "cap_1_check_reacao_floresta_resgate": {
+       "checks_ocultos": [
+          {
+             "tipo": "atributo",
+             "nome": "destreza",
+             "valor": 3,
+             "cena_sucesso": "cap_1_check_reacao_floresta_sucesso"
+          },
+       ],
+       "cena_falha": "cap_1_check_reacao_floresta_fail",
+    },       
+    
+    "cap_1_check_reacao_floresta_sucesso": {
+       "narrativa": """Sinto o vento cortar a minha lateral e reajo por puro instinto. Dou um salto lateral rente ao tronco de uma árvore antiga. A garra afiada do Barghest rasga apenas o ar onde meu peito estava há um segundo. Ganho impulso na casca da árvore e caio em base firme, empunhando a espada, pronto para o combate! 
+       
+       As duas criaturas me cercam, rosnando baixo e babando uma essência escura, buscando minha próxima falha para banquetear-se com a presa.
+       
+       (Hospedeiro, cuidado! Essas criaturas são inteligentes. Provavelmente a matilha principal está distraindo seus pais e o elfo enquanto você é o alvo real!) — avisa Lumina.""",
+       "opcoes": {
+          "A": {
+             "texto": "Tentar gritar chamando a atenção do Trio para me ajudar",
+             "modos": [
+                {
+                   "requisitos": [],
+                   "proxima_cena": "cap_1_check_atk_barghests",
+                }
+             ]
+          },
+          "B": {
+             "texto": "Desferir um golpe na criatura à frente mantendo a guarda contra a segunda (Força 1, Destreza 2)",
+             "modos": [
+              {
+                "requisitos": [
+                   {
+                      "tipo": "atributo",
+                      "nome": "forca",
+                      "valor": 1,
+                   },
+                   {
+                      "tipo": "atributo",
+                      "nome": "destreza",
+                      "valor": 2,
+                   }                   
+                ],
+                "narrativa": 
+                """Não perco tempo. Passo a perna à frente, fincando os pés no solo, e desfiro um corte transversal limpo no pescoço do Barghest à minha frente. A lâmina passa sem encontrar resistência e o sangue negro da fera espirra na vegetação.
+
+                (Atrás de você!) — Lumina brada na minha mente.
+
+                Abaixo a cabeça por um fio de segundo; o segundo monstro salta por cima de mim. Giro o corpo sobre o próprio eixo e cravo a espada de baixo para cima na barriga da fera enquanto ela ainda está no ar. O cadáver cai pesado no chão.
+
+                Eskil, que vinha recuando para me apoiar, para o passo e abre um sorriso orgulhoso:
+
+                — Bom reflexo, garoto! Corte limpo e base firme. A armadura nova caiu bem em você!""",
+                "proxima_cena": "capitulo_1_transicao_batalha_final",
+              }
+            ]
+          },
+          "C": {
+             "texto": "Observar o movimento das criaturas e contra-atacar na abertura (Inteligencia 2, Destreza 1)",
+             "modos": [
+                {
+                   "requisitos": [
+                      {
+                         "tipo": "atributo",
+                         "nome": "inteligencia",
+                         "valor": 2,
+                      },
+                      {
+                         "tipo": "atributo",
+                         "nome": "destreza",
+                         "valor": 1,                         
+                      }
+                   ],
+                   "narrativa": 
+                   """Relembro rapidamente as instruções táticas que vi Yvaine usar momentos atrás. Observo os pés das feras e a inclinação da vegetação baixa ao redor. Dou dois passos calculados para trás, atraindo a primeira criatura para um emaranhado de raízes expostas. Ela prende as patas traseiras e hesita por uma fração de segundo.
+
+                   É o suficiente. Avanço com uma estocada precisa no peito do monstro preso. Antes que a segunda besta perceba a armadilha, uso a carcaça da primeira como apoio, impulso-me para o lado e desfiro um golpe rápido na espinha da garra restante, paralisando-a de imediato.
+
+                   Yvaine nota a movimentação de longe, estufa o peito visivelmente orgulhosa e dá um breve sorriso:
+
+                   — Usando o terreno e a paciência ao seu favor… É o meu garoto!.
+""",
+                   "proxima_cena": "capitulo_1_transicao_batalha_final",
+                }
+             ]
+          },
+       }
+    },
+
+    "cap_1_check_atk_barghests": {
+       "checks_ocultos": [
+          {
+             "tipo": "sorte",
+             "requisito_base": 70,
+             "bonus_por_ponto": 10,
+             "cena_sucesso": "cap_1_atk_barghests_sucesso"
+          }
+       ],
+       "cena_falha": "cap_1_atk_barghests_fail", 
+    },
+
+    "cap_1_atk_barghests_sucesso": {
+       "narrativa": """— Mãe! Atrás de mim! — grito no topo dos meus pulmões.
+
+       Yvaine nem sequer vira o corpo inteiro. Com um movimento fluido e quase imperceptível de braço, ela arremessa duas adagas prateadas que cortam o ar como relâmpagos. As lâminas atingem precisamente a testa de ambas as criaturas antes que elas possam saltar sobre mim, caindo mortas aos meus pés.
+
+       Eldrin dá uma olhada rápida por cima do ombro e comenta com um sorriso de canto:
+
+       — Fique atento às sombras, garoto. Criaturas deste território usam o calor da batalha dos líderes para caçar os retardatários. É a tática de abate mais antiga da floresta.""",
+       "proxima_cena": "capitulo_1_transicao_batalha_final"
+    },
+
+    "cap_1_atk_barghests_fail": {
+       "narrativa": """— Mãe! — tento gritar, mas o som da batalha principal e as explosões mágicas de Eldrin abafam minha voz.
+Antes que eu possa recuar, as duas feras saltam simultaneamente. Consigo fincar minha lâmina na garganta da primeira, matando-a instantaneamente, mas a segunda me atinge em cheio no peito, jogando-me brutalmente contra o chão. Quando as mandíbulas do monstro estão a centímetros do meu pescoço, uma lâmina de sombra trespassa a cabeça da besta. Yvaine surge ao meu lado, arfando, e remove a criatura de cima de mim.
+Eldrin se aproxima com o olhar severo e me adverte:
+— Em um campo de batalha real, Kael, hesitar e esperar que outros lutem por você é o caminho mais rápido para a cova. Mantenha os olhos abertos e a lâmina pronta!""",
+       "dano_recebido": 3,
+       "proxima_cena": "capitulo_1_transicao_batalha_final"
+    },
+
+    "cap_1_check_reacao_floresta_fail": {
+       "narrativa": 
+       """Tento me esquivar, mas a minha reação é lenta. As garras afiadas da fera cortam de raspão o meu ombro esquerdo. Uma dor aguda e quente se espalha pelo meu braço. A ardência me faz rosnar de dor, ao mesmo tempo sinto o veneno da criatura deixando meu corpo entorpecido.
+       
+       As duas criaturas me cercam, rosnando baixo e babando uma essência escura, buscando minha próxima falha para banquetear-se com a presa.
+       
+       (Hospedeiro, cuidado! Essas criaturas são inteligentes. Provavelmente a matilha principal está distraindo seus pais e o elfo enquanto você é o alvo real!) — avisa Lumina.""",
+       "dano_recebido": 5,
+       "aplicar_debuff": {
+          "atributo": "destreza",
+          "valor": 1
+       },
+       "opcoes": {
+                 "A": {
+                    "texto": "Tentar gritar chamando a atenção do Trio para me ajudar",
+                    "modos": [
+                       {
+                          "requisitos": [],
+                          "proxima_cena": "cap_1_check_atk_barghests",
+                       }
+                    ]
+                 },
+                 "B": {
+                    "texto": "Desferir um golpe na criatura à frente mantendo a guarda contra a segunda (Força 1, Destreza 2)",
+                    "modos": [
+                     {
+                       "requisitos": [
+                          {
+                             "tipo": "atributo",
+                             "nome": "forca",
+                             "valor": 1,
+                          },
+                          {
+                             "tipo": "atributo",
+                             "nome": "destreza",
+                             "valor": 2,
+                          }                   
+                       ],
+                       "narrativa": 
+                       """Não perco tempo. Passo a perna à frente, fincando os pés no solo, e desfiro um corte transversal limpo no pescoço do Barghest à minha frente. A lâmina passa sem encontrar resistência e o sangue negro da fera espirra na vegetação.
+       
+       (Atrás de você!) — Lumina brada na minha mente.
+       
+       Abaixo a cabeça por um fio de segundo; o segundo monstro salta por cima de mim. Giro o corpo sobre o próprio eixo e cravo a espada de baixo para cima na barriga da fera enquanto ela ainda está no ar. O cadáver cai pesado no chão.
+       
+       Eskil, que vinha recuando para me apoiar, para o passo e abre um sorriso orgulhoso:
+       
+       Bom reflexo, garoto! Corte limpo e base firme. A armadura nova caiu bem em você!""",
+                       "proxima_cena": "capitulo_1_transicao_batalha_final",
+                     }
+                   ]
+                 },
+                 "C": {
+                    "texto": "Observar o movimento das criaturas e contra-atacar na abertura (Inteligencia 2, Destreza 1)",
+                    "modos": [
+                       {
+                          "requisitos": [
+                             {
+                                "tipo": "atributo",
+                                "nome": "inteligencia",
+                                "valor": 2,
+                             },
+                             {
+                                "tipo": "atributo",
+                                "nome": "destreza",
+                                "valor": 1,                         
+                             }
+                          ],
+                          "narrativa": 
+                          """Relembro rapidamente as instruções táticas que vi Yvaine usar momentos atrás. Observo os pés das feras e a inclinação da vegetação baixa ao redor. Dou dois passos calculados para trás, atraindo a primeira criatura para um emaranhado de raízes expostas. Ela prende as patas traseiras e hesita por uma fração de segundo.
+       
+       É o suficiente. Avanço com uma estocada precisa no peito do monstro preso. Antes que a segunda besta perceba a armadilha, uso a carcaça da primeira como apoio, impulso-me para o lado e desfiro um golpe rápido na espinha da garra restante, paralisando-a de imediato.
+       
+       Yvaine nota a movimentação de longe, estufa o peito visivelmente orgulhosa e dá um breve sorriso:
+       
+       — Usando o terreno e a paciência ao seu favor… É o meu garoto!.
+       """,
+                          "proxima_cena": "capitulo_1_transicao_batalha_final",
+                       }
+                    ]
+                 },
+              }
+    },
+
+    "capitulo_1_transicao_batalha_final": {
+       "HUD": True,
+       "narrativa": carregar_texto("capitulo_1_transicao_batalha_final.txt"),
+       "proxima_cena": "capitulo_1_batalha_final_heroica"
+    },
+
+    "capitulo_1_batalha_final_heroica": {
+       "narrativa": """O Cath Palug ruge, os olhos brilhando em uma tonalidade carmesim profana. Suas garras demoníacas cintilam em um tom rubi fulgurante à medida que a fera avança contra mim. Sinto o perigo no ar: as garras de um Palug não ferem apenas a carne, mas dilaceram a própria alma. """,
+       "blocos_sequenciais": [
+          {
+             "check_oculto": {
+                "tipo": "atributo",
+                "nome": "destreza",
+                "valor": 2
+             },
+             "sucesso": {
+                "texto": "Dou um salto lateral no exato milissegundo em que as garras rubras cortam o ar onde meu peito estava. O impacto da patada da besta estilhaça o solo de pedra ao meu lado, abrindo a guarda do monstro.",
+                "sub_checks": [
+                   {
+                      "check": {"tipo": "atributo", "nome": "forca", "valor": 1},
+                      "texto": "Aproveito a abertura e desfiro um golpe brutal com minha espada banhada pela essência negra de Nix. A lâmina atravessa a carapaça do Palug, deixando um corte profundo em seu flanco. A fera urra de dor enquanto sangue negro goteja no solo.",
+                      "proxima_cena": "capitulo_1_batalha_final_heroica_fase_2A"
+                   },
+                   {
+                      "check": {"tipo": "atributo", "nome": "magia", "valor": 1},
+                      "texto": "Com o suporte de Nix, canalizo uma chama negra de essência sombria em minha mão e o manifesto diretamente na pata apoiada da criatura. O fogo profano queima a carne do felino enquanto drena sua energia.",
+                      "proxima_cena": "capitulo_1_batalha_final_heroica_fase_2A"
+                   },
+                   {
+                      "check": {"tipo": "atributo", "nome": "inteligencia", "valor": 2},
+                      "texto": "Lembro-me da conversa com Lumina sobre moldar a essência. Com a energia de Nix, imagino envolvendo meu punho com uma densa manopla de essência negra cristalizada e desfiro um soco devastador diretamente no crânio da fera, fazendo-a desnortear com o impacto.",
+                      "proxima_cena": "capitulo_1_batalha_final_heroica_fase_2A"
+                   },                      
+                ],
+                "texto_falha_sub_checks": "Consigo esquivar a tempo, recompondo minha postura enquanto o felino se vira rapidamente para mim, arfando.",
+                "proxima_cena": "capitulo_1_batalha_final_heroica_fase_2B",
+             },
+             "falha": {
+                "texto": "Tento desviar, mas o veneno dos barghests ainda afeta meu equilibrio. As garras rubi rasgam meu peito. A dor não é apenas física; sinto como se minha própria vitalidade e energia fossem arrancadas de mim!",
+                "dano_recebido": 5,
+                "aplicar_debuff": {"atributo": "magia", "valor": 1},
+                "check_resgate": {
+                   "tipo": "chance_sorte",
+                   "requisito_base": 25,
+                   "bonus_por_ponto": 10,
+                },
+                "sucesso_resgate": {
+                   "texto": "Por um tris! Consigo esquivar a cabeça no último milissegundo. Os dentes do monstro estalam no ar, raspando meu ombro.",
+                   "proxima_cena": "capitulo_1_batalha_final_heroica_fase_2B"
+                },
+                "falha_resgate": {
+                   "texto": "Minha visão escurece. A dor do ferimento me impede de erguer a lâmina a tempo. As mandíbulas da besta se fecham ao redor do meu pescoço... O mundo se apaga...",
+                   "proxima_cena": "game_over"
+                }
+             },
+          }
+       ],
+    },
+
+    "game_over": {"dano_recebido": 99, "proxima_cena": ""},
+
+    "capitulo_1_batalha_final_heroica_fase_2A": {
+       "narrativa": """Após o primeiro contato, a criatura cambaleia. Yvaine finaliza o tratamento de Astrid, saca suas adagas com rapidez e habilidade, eliminando um dos imps que cercavam Eskil.
+       Sem perder tempo, o guerreiro faz uma investida contra o último diabo, decepando sua cabeça com um corte limpo. O casal se prepara para se unir a Eldrin na batalha mágica.
+       O conjurador continua invocando criaturas demoníacas — seres que parecem sombras vivas — e os comanda para cima do arquimago. Eldrin, por sua vez, utiliza magia de luz para eliminar as sombras em um piscar de olhos. É possível notar a impaciência no olhar do daemon tamer. Em um rito desesperado, ele invoca uma enorme gárgula que voa diretamente na direção do elfo. Dessa vez, a conjuração rápida de feitiços de Eldrin não é suficiente, pois a besta parece ser imune à magia.
+       No entanto, o rito cobra seu preço: o invocador tosse sangue e aparenta ter perdido a capacidade de se teleportar. Ele tenta aproveitar a confusão no campo de batalha para fugir, mas uma adaga cintilante voa da direção de uma das árvores, atingindo em cheio o seu calcanhar. Não sei quem a lançou, mas a mira foi impecável. Com o calcanhar ferido, mesmo que o mago corra sem descanso, não irá muito longe, deixando um rastro de sangue fácil de seguir.
+       Yvaine e Eskil se juntam a Eldrin para conter a gárgula.
+
+       Ouço um leve rosnado à minha frente; a criatura me observa, aguardando meu próximo movimento. Com o Cath Palug se recompondo do primeiro encontro, a iniciativa está totalmente em minhas mãos!""",
+       "opcoes": {
+          "A": {
+             "texto": "Observar a criatura, aguardando seu próximo movimento",
+             "proxima_cena": "capitulo_1_palug_atk_final_heroico"
+          },
+          "B": {
+             "texto": "Investir contra a criatura com a espada embanhada em essência negra de Nix",
+             "conhecimento_adquirido": "Palug - Espada Negra",
+             "proxima_cena": "cap_1_check_death_palugA"
+          }, 
+          "C": {
+             "texto": "Atacar a criatura utlizando a chama negra, buscando queimá-la por inteiro (Magia 1)",
+             "conhecimento_adquirido": "Palug - Chama Negra",
+             "proxima_cena": "cap_1_check_death_palugA"
+          },  
+          "D": {
+             "texto": "Investir contra a criatura utilizando a manopla de essencia para esmagá-la (Inteligência 2)",
+             "conhecimento_adquirido": "Palug - Manopla Negra",
+             "proxima_cena": "cap_1_check_death_palugA"
+          },                     
+       }
+    },
+
+    "cap_1_check_death_palugA": {
+       "blocos_sequenciais":[
+          {
+             "check_oculto": {
+                "tipo": "chance_sorte",
+                "requisito_base": 50,
+                "bonus_por_ponto": 10,
+             },
+             "sucesso": {
+                "texto": "Meu ataque passa direto pela guarda da besta!",
+                "sub_checks": [
+                   {
+                     "check": {"tipo": "conhecimento", "nome": "Palug - Espada Negra"},
+                     "texto": """O golpe atinge o Cath Palug em cheio causando um corte profundo.
+                     O felino desaba, sangrando profusamente e agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                     Sinto minha força se multiplicar, desfiro outro golpe minha lâmina aumenta com o encanto de Astrid e a essência de Nix, dividindo a fera ao meio com um corte vertical devastador.""", 
+                     "proxima_cena": "capitulo_1_final"
+                   },
+                   {
+                     "check": {"tipo": "conhecimento", "nome": "Palug - Chama Negra"},
+                     "texto": """O golpe atinge o Cath Palug em cheio seus pelo se incendeiam com o fogo negro.
+                     O felino desaba agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                     Canalizo o poder de Astrid junto à essência de Nix, criando uma lança de chama sombria que atravessa o coração do Cath Palug e o vaporiza por dentro.""", 
+                     "proxima_cena": "capitulo_1_final"
+                   },  
+                   {
+                     "check": {"tipo": "conhecimento", "nome": "Palug - Manopla Negra"},
+                     "texto": """O golpe atinge o Cath Palug em cheio um soco certeiro na base de seu crânio.
+                     O felino desaba, sangrando profusamente e agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                     A manopla de essência duplica de tamanho sob o efeito do brilho de Astrid. Desfiro um soco sísmico no peito da besta, colapsando seu corpo contra o solo.""", 
+                     "proxima_cena": "capitulo_1_final"
+                   },                                      
+                ],
+             }
+          },
+       ]
+    },
+
+    "capitulo_1_batalha_final_heroica_fase_2B": {
+       "narrativa": """Após o primeiro contato, a criatura me ronda, me encarando como se tivesse encontrado a presa perfeita. Enquanto isso Yvaine finaliza o tratamento de Astrid, saca suas adagas com rapidez e habilidade, eliminando um dos imps que cercavam Eskil.
+Sem perder tempo, o guerreiro faz uma investida contra o último diabo, decepando sua cabeça com um corte limpo. O casal se prepara para se unir a Eldrin na batalha mágica.
+O conjurador continua invocando criaturas demoníacas — seres que parecem sombras vivas — e os comanda para cima do arquimago. Eldrin, por sua vez, utiliza magia de luz para eliminar as sombras em um piscar de olhos. É possível notar a impaciência no olhar do daemon tamer. Em um rito desesperado, ele invoca uma enorme gárgula que voa diretamente na direção do elfo. Dessa vez, a conjuração rápida de feitiços de Eldrin não é suficiente, pois a besta parece ser imune à magia.
+No entanto, o rito cobra seu preço: o invocador tosse sangue e aparenta ter perdido a capacidade de se teleportar. Ele tenta aproveitar a confusão no campo de batalha para fugir, mas uma adaga cintilante voa da direção de uma das árvores, atingindo em cheio o seu calcanhar. Não sei quem a lançou, mas a mira foi impecável. Com o calcanhar ferido, mesmo que o mago corra sem descanso, não irá muito longe, deixando um rastro de sangue fácil de seguir.
+Yvaine e Eskil se juntam a Eldrin para conter a gárgula.
+
+Ouço um leve rosnado à minha frente; a criatura aguarda meu próximo movimento. A iniciativa está totalmente em minhas mãos!""",
+       "opcoes": {
+          "A": {
+             "texto": "Observar a criatura, aguardando seu próximo movimento",
+             "proxima_cena": "capitulo_1_palug_atk_final_heroico"
+          },
+          "B": {
+             "texto": "Investir contra a criatura com a espada embanhada em essência negra de Nix",
+             "conhecimento_adquirido": "Palug - Espada Negra",
+             "proxima_cena": "cap_1_check_death_palugB"
+          }, 
+          "C": {
+             "texto": "Atacar a criatura utlizando a chama negra, buscando queimá-la por inteiro (Magia 1)",
+             "conhecimento_adquirido": "Palug - Chama Negra",
+             "proxima_cena": "cap_1_check_death_palugB"
+          },  
+          "D": {
+             "texto": "Investir contra a criatura utilizando a manopla de essencia para esmagá-la (Inteligência 2)",
+             "conhecimento_adquirido": "Palug - Manopla Negra",
+             "proxima_cena": "cap_1_check_death_palugB"
+          },                     
+       }
+    },
+
+    "cap_1_check_death_palugB": {
+           "blocos_sequenciais":[
+              {
+                 "check_oculto": {
+                    "tipo": "chance_sorte",
+                    "requisito_base": 80,
+                    "bonus_por_ponto": 10,
+                 },
+                 "sucesso": {
+                    "texto": "Meu ataque passa direto pela guarda da besta!",
+                    "sub_checks": [
+                       {
+                         "check": {"tipo": "conhecimento", "nome": "Palug - Espada Negra"},
+                         "texto": """O golpe atinge o Cath Palug em cheio causando um corte profundo.
+                         O felino desaba, sangrando profusamente e agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                         Sinto minha força se multiplicar, desfiro outro golpe minha lâmina aumenta com o encanto de Astrid e a essência de Nix, dividindo a fera ao meio com um corte vertical devastador.""", 
+                         "proxima_cena": "capitulo_1_final"
+                       },
+                       {
+                         "check": {"tipo": "conhecimento", "nome": "Palug - Chama Negra"},
+                         "texto": """O golpe atinge o Cath Palug em cheio seus pelo se incendeiam com o fogo negro.
+                         O felino desaba agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                         Canalizo o poder de Astrid junto à essência de Nix, criando uma lança de chama sombria que atravessa o coração do Cath Palug e o vaporiza por dentro.""", 
+                         "proxima_cena": "capitulo_1_final"
+                       },  
+                       {
+                         "check": {"tipo": "conhecimento", "nome": "Palug - Manopla Negra"},
+                         "texto": """O golpe atinge o Cath Palug em cheio um soco certeiro na base de seu crânio.
+                         O felino desaba, sangrando profusamente e agonizando. Quando a criatura faz um esforço para se levantar e tentar um último arranhão, sinto uma onda de energia aquecer minhas costas: Astrid conjura suas últimas forças, cobrindo meu corpo com uma aura de mana radiante!
+                         A manopla de essência duplica de tamanho sob o efeito do brilho de Astrid. Desfiro um soco sísmico no peito da besta, colapsando seu corpo contra o solo.""", 
+                         "proxima_cena": "capitulo_1_final"
+                       },                                      
+                    ],
+                 },
+                "falha": {
+                   "texto": """A fera antecipa o meu movimento, usa a cauda para desviar meu ataque e me atinge com um golpe de impacto violento nas costelas!.
+                   Caio de joelhos, sem ar. O Cath Palug escancara as mandíbulas e salta para mordida!""",
+                   "dano_recebido": 5,
+                   "check_resgate": {
+                        "tipo": "chance_sorte",
+                        "requisito_base": 25,
+                        "bonus_por_ponto": 10,
+                    },
+                    "sucesso_resgate": {
+                        "texto": "Consigo esquivar no último milissegundo! Os dentes do monstro estalam no ar.",
+                        "proxima_cena": "capitulo_1_palug_atk_final_heroico"
+                    },
+                    "falha_resgate": {
+                        "texto": "Minha visão escurece. A dor do ferimento me impede de erguer a lâmina a tempo. As mandíbulas da besta se fecham ao redor do meu pescoço... O mundo se apaga...",
+                        "proxima_cena": "game_over"
+                    }                   
+                },
+              },
+           ]
+        },
+
+    "capitulo_1_palug_atk_final_heroico": {
+       "narrativa": """Recuo um passo, desacelerando a respiração e analisando detalhadamente cada tremor na postura da fera.
+O Cath Palug se lança em uma sequência de ataques. Prevejo sua trajetória e, ao realizar uma esquiva em ângulo perfeito, giro o corpo e desfiro um golpe cirúrgico: degolo parte do pescoço do felino e decepo uma de suas patas dianteiras!
+A besta desaba rugindo de dor. Tenta se levantar cambaleando e faz uma última investida cega. Astrid projeta uma barreira de luz à minha frente, bloqueando o ataque residual. O Cath Palug colide contra a barreira e cai morto, sucumbindo à hemorragia.""",
+       "proxima_cena": "capitulo_1_final",
+    },
 #----- CAPITULOS A SEREM ESCRITOS-----
     "capitulo_1_abandono": {
         "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
@@ -1871,10 +2689,11 @@ Diante de figuras com poder avassalador, a arrogância ou a mentira descarada po
         "proxima_cena": "menu_principal"
     }, 
 
-    "capitulo_1_reuniao": {
+    "capitulo_1_final": {
         "narrativa": "[CAPITULO EM CONSTRUÇÃO]",
         "proxima_cena": "menu_principal"
     }, 
+
 }
 
 # ============================================
